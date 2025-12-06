@@ -129,7 +129,9 @@ ssh user@10.0.0.3
 
 The Hub includes a built-in web server. Access it via:
 
-> **http://\<HUB\_LOCAL\_IP\>:8080**
+```bash
+http://\<HUB\_LOCAL\_IP\>:8080
+```
 
 It provides real-time stats:
 
