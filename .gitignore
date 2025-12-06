@@ -1,0 +1,27 @@
+# Binaries
+/bin/
+dist/
+main
+hub
+agent
+go-mesh-hub
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Development specific
+.idea/
+.vscode/
+*.swp
+*.log
+*.tmp
+tmp/
+
+# OS specific
+.DS_Store
+Thumbs.db
+
+# Go specific
+vendor/
+go.work
