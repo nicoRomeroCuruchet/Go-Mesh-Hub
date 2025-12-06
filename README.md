@@ -57,7 +57,7 @@ We provide a bootstrap script that detects your architecture, installs Go (if mi
 1.  **Clone the repository:**
 
     ```bash
-    git clone [https://github.com/nicoRomeroCuruchet/Go-Mesh-Hub.git](https://github.com/nicoRomeroCuruchet/Go-Mesh-Hub.git)
+    git clone https://github.com/nicoRomeroCuruchet/Go-Mesh-Hub.git
     cd Go-Mesh-Hub
     ```
 
