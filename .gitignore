@@ -1,9 +1,6 @@
 # Binaries
 /bin/
 dist/
-main
-hub
-agent
 go-mesh-hub
 *.exe
 *.dll
