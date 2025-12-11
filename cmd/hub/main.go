@@ -34,6 +34,17 @@ func main() {
         routeTable.SetExitNode(cfg.ExitNodeIP)
     }
 
+	// --- EXIT NODE CONFIGURATION ---
+    if cfg.ExitNodeIP == cfg.TunIP {
+        // We call our new function
+        cleanupNAT, err := tun.EnableExitNode(ifce.Name())
+        if err != nil {
+            log.Fatalf("[CRIT] Failed to enable Exit Node: %v", err)
+        }
+        // IMPORTANT: Ensure rules are deleted when we kill the app
+        defer cleanupNAT() 
+    }
+
 	// 5. Start UDP Listener
 	localAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf(":%d", cfg.LocalPort))
 	if err != nil {
@@ -80,12 +91,27 @@ func main() {
 				routeTable.Learn(srcIP, remoteAddr)
 				routeTable.RecordRx(srcIP, len(plaintext)) // Update Dashboard Stats
 
-				// B. Route
-				if dstIP == cfg.TunIP {
-					ifce.Write(plaintext)
-				} else {
-					forwardPacket(plaintext, dstIP, conn, sec, routeTable)
-				}
+				// B. Routing Decision
+                isPeer := routeTable.Lookup(dstIP) != nil
+
+                if isPeer {
+					//It's internal VPN traffic
+                    forwardPacket(plaintext, dstIP, conn, sec, routeTable)
+                
+                } else if dstIP == cfg.TunIP {
+                    // It's for me: Eg. ping to Hub
+                    ifce.Write(plaintext)
+                
+                } else if cfg.ExitNodeIP == cfg.TunIP {
+			        //It's Internet traffic! (e.g., Destination 8.8.8.8)
+				    //Since I'm the Exit Node and I've already enabled NAT, I inject the packet
+				    //into my TUN interface. The Linux kernel will see that it's for 8.8.8.8
+				    //and will route it through eth0 using Masquerade.
+                    ifce.Write(plaintext)
+                
+                } else {
+                    log.Printf("Drop: Unknown destination %s", dstIP)
+                }
 			}
 		}
 	}()
@@ -115,6 +141,7 @@ func forwardPacket(data []byte, dstIP string, conn *net.UDPConn, sec *security.M
         return 
     }
 
+	// re-encryping
 	encryptedData, err := sec.PackAndEncrypt(data)
 	if err != nil {
 		return
