@@ -6,7 +6,7 @@ import (
 	"net"
 
 	"go-mesh-hub/internal/config"
-	"go-mesh-hub/internal/dashboard" // NEW IMPORT
+	"go-mesh-hub/internal/dashboard"
 	"go-mesh-hub/internal/router"
 	"go-mesh-hub/internal/security"
 	"go-mesh-hub/internal/tun"
@@ -15,7 +15,7 @@ import (
 func main() {
 	// 1. Load Configuration
 	cfg := config.Load()
-
+	
 	// 2. Initialize Security
 	sec, err := security.New(cfg.Secret)
 	if err != nil {
@@ -30,6 +30,9 @@ func main() {
 
 	// 4. Initialize Routing Table
 	routeTable := router.NewTable()
+	if cfg.ExitNodeIP != "" {
+        routeTable.SetExitNode(cfg.ExitNodeIP)
+    }
 
 	// 5. Start UDP Listener
 	localAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf(":%d", cfg.LocalPort))
@@ -102,19 +105,22 @@ func main() {
 	}
 }
 
-// forwardPacket encrypts and sends data
+// forwardPacket handles encryption and transmission based on routing rules
 func forwardPacket(data []byte, dstIP string, conn *net.UDPConn, sec *security.Manager, table *router.Table) {
-	target := table.Lookup(dstIP)
-	if target == nil {
-		return
-	}
+	
+	targetAddr, found := table.GetRoute(dstIP)
+    
+    if !found {
+        // Drop: No route to host (neither Peer nor Exit Node)
+        return 
+    }
 
 	encryptedData, err := sec.PackAndEncrypt(data)
 	if err != nil {
 		return
 	}
 
-	conn.WriteToUDP(encryptedData, target)
+	conn.WriteToUDP(encryptedData, targetAddr)
 	
 	// Update Dashboard Stats (Tx)
 	table.RecordTx(dstIP, len(data)) 

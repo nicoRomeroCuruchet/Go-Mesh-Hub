@@ -11,14 +11,15 @@ import (
 	"os/exec"
 	"time"
 
-	"github.com/songgao/water"
 	"golang.org/x/crypto/chacha20poly1305"
+	"go-mesh-hub/internal/tun"
 )
 
 var (
 	hubIP      = flag.String("hub-ip", "", "Public IP of the Hub Server")
 	hubPort    = flag.Int("hub-port", 5000, "UDP port of the Hub")
 	tunIP      = flag.String("tun-ip", "", "My Virtual IP (e.g. 10.0.0.2)")
+	isExitNode = flag.Bool("exit-node", false, "Act as an Exit Node (Route internet traffic)")
 	secret    = flag.String("secret", "change-this-password", "Shared secret for encryption")
 )
 
@@ -36,12 +37,21 @@ func main() {
 	}
 
 	// 2. TUN
-	config := water.Config{DeviceType: water.TUN}
-	ifce, err := water.New(config)
+	ifce, err := tun.Setup(*tunIP)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("[CRIT] TUN init failed: %v", err)
 	}
-	setupInterface(ifce.Name(), *tunIP)
+
+	// --- EXIT NODE CONFIGURATION ---
+    if *isExitNode {
+        // We call our new function
+        cleanupNAT, err := tun.EnableExitNode(ifce.Name())
+        if err != nil {
+            log.Fatalf("[CRIT] Failed to enable Exit Node: %v", err)
+        }
+        // IMPORTANT: Ensure rules are deleted when we kill the app
+        defer cleanupNAT() 
+    }
 
 	// 3. UDP Connection to Hub
 	serverAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", *hubIP, *hubPort))

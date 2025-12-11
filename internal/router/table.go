@@ -19,7 +19,8 @@ type PeerStats struct {
 // Table manages the mapping between Virtual IPs and Peer Data
 type Table struct {
 	sync.RWMutex
-	routes map[string]*PeerStats // Changed value from *net.UDPAddr to *PeerStats
+	routes map[string]*PeerStats
+	exitNodeIP string
 }
 
 func NewTable() *Table {
@@ -91,4 +92,40 @@ func (t *Table) Snapshot() []PeerStats {
 		peers = append(peers, *p)
 	}
 	return peers
+}
+
+// SetExitNode defines which Virtual IP acts as the default gateway for internet traffic
+func (t *Table) SetExitNode(virtualIP string) {
+    t.Lock()
+    defer t.Unlock()
+    t.exitNodeIP = virtualIP
+    log.Printf("[ROUTER] Exit Node set to: %s", virtualIP)
+}
+
+// GetRoute decides where to send the packet based on Destination IP.
+// This implements the core "Split Tunneling" vs "Full Tunneling" logic support.
+func (t *Table) GetRoute(dstIP string) (*net.UDPAddr, bool) {
+    t.RLock()
+    defer t.RUnlock()
+
+    // 1. Direct Peer Match (VPN Mesh Traffic)
+    // Example: 10.0.0.2 talking to 10.0.0.3
+    if peer, ok := t.routes[dstIP]; ok {
+        // Resolve stored address string back to UDPAddr
+        addr, _ := net.ResolveUDPAddr("udp", peer.RealAddr)
+        return addr, true
+    }
+
+    // 2. Default Route (Internet Traffic via Exit Node)
+    // If destination is NOT a peer (e.g. 8.8.8.8), and we have an Exit Node configured...
+    if t.exitNodeIP != "" {
+        // We look up the Real Address of the Exit Node itself
+        if exitPeer, ok := t.routes[t.exitNodeIP]; ok {
+            addr, _ := net.ResolveUDPAddr("udp", exitPeer.RealAddr)
+            return addr, true
+        }
+    }
+
+    // 3. No Route Found (Drop packet)
+    return nil, false
 }
