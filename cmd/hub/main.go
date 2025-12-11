@@ -41,6 +41,7 @@ func main() {
         if err != nil {
             log.Fatalf("[CRIT] Failed to enable Exit Node: %v", err)
         }
+		log.Printf("[INFO] Exit node on %s", cfg.ExitNodeIP)
         // IMPORTANT: Ensure rules are deleted when we kill the app
         defer cleanupNAT() 
     }
