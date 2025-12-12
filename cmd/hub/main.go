@@ -4,7 +4,10 @@ import (
 	"fmt"
 	"log"
 	"net"
-
+	"os"
+	"os/signal"
+	"syscall"
+	
 	"go-mesh-hub/internal/config"
 	"go-mesh-hub/internal/dashboard"
 	"go-mesh-hub/internal/router"
@@ -34,15 +37,16 @@ func main() {
         routeTable.SetExitNode(cfg.ExitNodeIP)
     }
 
+	var cleanupNAT func()
 	// --- EXIT NODE CONFIGURATION ---
     if cfg.ExitNodeIP == cfg.TunIP {
-        // We call our new function
-        cleanupNAT, err := tun.EnableExitNode(ifce.Name())
+        // we call our new function
+        cleanupNAT, err = tun.EnableExitNode(ifce.Name())
         if err != nil {
             log.Fatalf("[CRIT] Failed to enable Exit Node: %v", err)
         }
-		log.Printf("[INFO] Exit node on %s", cfg.ExitNodeIP)
-        // IMPORTANT: Ensure rules are deleted when we kill the app
+		log.Printf("[NAT] Exit Node Enabled on %s. Traffic will be masqueraded via host interface.", cfg.ExitNodeIP)
+        // ensure rules are deleted when we kill the app
         defer cleanupNAT() 
     }
 
@@ -57,6 +61,26 @@ func main() {
 	}
 	defer conn.Close()
 	log.Printf("[INFO] VPN Server listening on %s", localAddr)
+
+	// For clean the iptable to restore internet
+	go func() {
+		sigChan := make(chan os.Signal, 1)
+		signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+		// blocking here waiting the signal
+		sig := <-sigChan
+	
+		fmt.Println()
+		log.Printf("[OS] Received signal: %v. Cleaning up...", sig)
+		// 1. Restore IPTables / NAT 
+		if cleanupNAT != nil {
+			cleanupNAT()
+		}
+		// 2. close conections
+		conn.Close()
+		ifce.Close()
+		log.Println("[OS] Cleanup complete. Exiting.")
+		os.Exit(0) // Matamos el programa limpiamente
+	}()
 
 	// 6. START DASHBOARD (Non-blocking)
 	go dashboard.Start(cfg.WebPort, routeTable)
@@ -122,7 +146,8 @@ func main() {
 	for {
 		n, err := ifce.Read(packet)
 		if err != nil {
-			log.Fatalf("[CRIT] TUN Read Error: %v", err)
+			//log.Fatalf("[CRIT] TUN Read Error: %v", err)
+			return
 		}
 		
 		if n < 20 { continue }

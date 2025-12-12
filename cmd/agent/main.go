@@ -16,11 +16,12 @@ import (
 )
 
 var (
-	hubIP      = flag.String("hub-ip", "", "Public IP of the Hub Server")
-	hubPort    = flag.Int("hub-port", 5000, "UDP port of the Hub")
-	tunIP      = flag.String("tun-ip", "", "My Virtual IP (e.g. 10.0.0.2)")
-	isExitNode = flag.Bool("exit-node", false, "Act as an Exit Node (Route internet traffic)")
-	secret    = flag.String("secret", "change-this-password", "Shared secret for encryption")
+	hubIP       = flag.String("hub-ip", "", "Public IP of the Hub Server")
+	hubPort     = flag.Int("hub-port", 5000, "UDP port of the Hub")
+	tunIP       = flag.String("tun-ip", "", "My Virtual IP (e.g. 10.0.0.2)")
+	isExitNode  = flag.Bool("exit-node", false, "Act as an Exit Node (Route internet traffic)")
+	useExitNode = flag.Bool("global-exit", false, "Route all internet traffic through the VPN Hub")
+	secret      = flag.String("secret", "change-this-password", "Shared secret for encryption")
 )
 
 func main() {
@@ -51,6 +52,22 @@ func main() {
         }
         // IMPORTANT: Ensure rules are deleted when we kill the app
         defer cleanupNAT() 
+    }
+
+	if *useExitNode {
+        // Resolvemos la IP del Hub (si nos pasaron un dominio, necesitamos la IP numérica para 'ip route')
+        hubUDPAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", *hubIP, *hubPort))
+        if err != nil {
+            log.Fatalf("[CRIT] Failed to resolve Hub IP: %v", err)
+        }
+        hubRealIP := hubUDPAddr.IP.String()
+        // Magic happens here:
+        cleanupRoutes, err := tun.RedirectGateway(ifce.Name(), hubRealIP)
+        if err != nil {
+            log.Fatalf("[CRIT] Failed to redirect gateway: %v", err)
+        }
+        defer cleanupRoutes() // Restore internet when we exit 
+        log.Println("[INFO] Global Exit Node active. You are now surfing via the Hub.")
     }
 
 	// 3. UDP Connection to Hub
