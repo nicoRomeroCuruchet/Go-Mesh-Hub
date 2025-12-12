@@ -5,23 +5,35 @@
 ![Build Status](https://img.shields.io/badge/build-passing-brightgreen)
 ![Platform](https://img.shields.io/badge/platform-linux%2Famd64%20%7C%20linux%2Farm64-lightgrey)
 
-**Go-Mesh-Hub** is a lightweight, secure, and highly scalable VPN orchestrator written in Go. It creates a virtual overlay network, enabling seamless bidirectional communication between devices behind restrictive NATs, CGNATs, and Firewalls without requiring manual port forwarding on the edge devices.
 
-Designed for **IoT Fleets** (NVIDIA Jetson, Raspberry Pi), **Edge Computing**, and secure **Home Labs**.
+**Go-Mesh-Hub** is an enterprise-grade, secure VPN orchestrator and overlay network written in Go. It enables seamless, bidirectional communication between devices behind restrictive NATs, CGNATs, and Firewalls without requiring manual port forwarding on edge devices.
 
-![Dashboard Preview](docs/dashboard_preview.png)
-*(Replace this path with your actual screenshot)*
+Unlike traditional P2P VPNs, Go-Mesh-Hub supports **Hub & Spoke** topology with flexible routing modes: **Split Tunneling** (Mesh only) and **Full Tunneling** (Exit Node / Gateway), making it ideal for IoT Fleets, Edge Computing, and secure home lab remote access.
 
 ## 🚀 Key Features
 
-* **Hub & Spoke Topology:** Centralized signaling with efficient UDP tunneling.
-* **Zero-Config Edge:** Clients (Agents) automatically traverse NATs using **UDP Hole Punching** and Keep-Alives.
-* **Military-Grade Security:** All traffic is encrypted using **ChaCha20-Poly1305** (AEAD) with nonces to prevent replay attacks.
-* **Real-Time Observability:** Embedded Web Dashboard for monitoring peer status, bandwidth usage (Rx/Tx), and latency.
-* **Smart Build System:** Automated cross-compilation for Intel/AMD and ARM architectures via `setup.sh`.
-* **Layer 3 Tunneling:** Uses a standard `TUN` interface, supporting ICMP (Ping), TCP (SSH, HTTP), and UDP.
+### 🛡️ Core Capabilities
 
+  * **Hub & Spoke Topology:** Centralized signaling with highly efficient UDP tunneling.
+  * **Exit Node Support (Full Tunneling):** Turn your Hub into a secure Gateway. Route internet traffic from agents through the Hub to mask public IPs or access geo-restricted content.
+  * **Zero-Config Edge:** Agents automatically traverse NATs using **UDP Hole Punching** and persistent Keep-Alives.
+  * **Self-Healing Network Stack:** Automated management of `iptables` NAT/Masquerade rules and `ip_forward` policies. Includes idempotent rule application and graceful shutdown cleanup to prevent routing conflicts.
+
+### 🔐 Security & Performance
+
+  * **Military-Grade Encryption:** All traffic is encapsulated and encrypted using **ChaCha20-Poly1305** (AEAD) with cryptographically secure nonces to prevent replay attacks.
+  * **Layer 3 Tunneling:** Utilizes a standard `TUN` interface, supporting ICMP (Ping), TCP (SSH, HTTP), and UDP natively.
+  * **High Performance:** Written in pure Go using raw syscalls and user-space networking for minimal overhead.
+
+### 👁️ Observability
+
+  * **Real-Time Dashboard:** Embedded web interface for monitoring peer status, real-time bandwidth usage (Rx/Tx), and latency.
+  * **Smart Build System:** Automated cross-compilation for Intel/AMD and ARM architectures (NVIDIA Jetson, Raspberry Pi) via `setup.sh`.
+
+-----
 ## 🏗️ Architecture
+
+The system operates by creating a virtual overlay network. Packets destined for the VPN are intercepted by the `TUN` interface, encrypted in user-space, and encapsulated in UDP packets for transport over the public internet.
 
 ```mermaid
 graph TD
@@ -32,141 +44,149 @@ graph TD
     end
     
     subgraph Private Network A
-        Jetson[Edge: Jetson Nano] -->|Encrypted UDP| Hub
+        PC1[Edge: PC1] -->|Encrypted UDP| Hub
     end
     
     subgraph Private Network B
-        BBB[Edge: BeagleBone] -->|Encrypted UDP| Hub
+        PC2[Remote PC2] -->|Encrypted UDP| Hub
     end
     
     Dashboard -.-> Hub
-    Jetson <-->|Virtual IP 10.0.0.x| BBB
-````
+    PC1 <-->|Virtual IP 10.0.0.x| PC2
+
+    PC2 -- "Internet Traffic (Exit Node)" --> Hub -- "NAT Masquerade" --> Internet
+```
+### Packet Flow (Simplified)
+
+1.  **Application** sends a packet to `10.0.0.2` (Peer) or `8.8.8.8` (Internet).
+2.  **Kernel** routes packet to `tun0` interface.
+3.  **Go-Mesh-Hub** reads the raw IP packet from `tun0`.
+4.  **Crypto Engine** encrypts the payload (ChaCha20-Poly1305).
+5.  **Transport Layer** wraps the encrypted data in UDP and transmits to the Hub's physical IP.
+6.  **Hub** decrypts and either routes to another Peer (Mesh) or acts as a NAT Gateway to the Internet (Exit Node).
+
+-----
 
 ## 🛠️ Installation & Setup
 
 ### Prerequisites
 
   * **Linux OS** (Debian, Ubuntu, Arch, Alpine, etc.)
-  * **Root privileges** (required to create network interfaces)
+  * **Root privileges** (Required to create `TUN` interfaces and modify `iptables`).
 
-### Option A: Automated Setup (Recommended)
+### Automated Setup
 
-We provide a bootstrap script that detects your architecture, installs Go (if missing), and builds the binaries automatically.
-
-1.  **Clone the repository:**
-
-    ```bash
-    git clone https://github.com/nicoRomeroCuruchet/Go-Mesh-Hub.git
-    cd Go-Mesh-Hub
-    ```
-
-2.  **Run the Setup Script:**
-
-    ```bash
-    chmod +x setup.sh
-    ./setup.sh
-    ```
-
-3.  **Done\!** Binaries are located in the `bin/` directory.
-
-### Option B: Manual Build (For Developers)
-
-If you prefer using `Make`:
+Our bootstrap script automatically detects your CPU architecture (AMD64, ARM64, ARMv7), installs Go if missing, and builds the binaries.
 
 ```bash
-make build
-# or
-make clean
+git clone https://github.com/nicoRomeroCuruchet/Go-Mesh-Hub.git
+cd Go-Mesh-Hub
+chmod +x setup.sh
+./setup.sh
 ```
-
+3.  **Done\!** Binaries are located in the `bin/` directory.
 -----
-
 ## ⚙️ Deployment Guide
 
-### 1\. Start the Hub (Server)
+### Scenario 1: Standard Mesh (P2P Communication)
 
-Deploy this on a machine with a **Public IP** or with **UDP Port 45678** forwarded.
+In this mode, devices can talk to each other (e.g., SSH, ping, etc.), but internet traffic uses the device's own local connection. Deploy this on a machine with a Public IP or with UDP Port 45678 forwarded.
+
+**1. Start the Hub (Server)**
 
 ```bash
-# Run as root
+# Run on a machine with a Public IP
 sudo ./bin/hub \
   -local-port 45678 \
   -web-port 8080 \
   -tun-ip 10.0.0.1 \
-  -secret "change-this-to-a-strong-password"
+  -secret "my-password"
 ```
 
-  * **UDP :45678**: VPN Traffic (Must be open to internet).
-  * **TCP :8080**: Web Dashboard (Internal use).
-
-### 2\. Start an Agent (Client)
-
-Deploy this on your edge devices (Jetson, BBB, Laptops). No incoming ports needed.
+**2. Start an Agent (Client)**
 
 ```bash
-# Replace <HUB_PUBLIC_IP> with your server's real IP
 sudo ./bin/agent \
   -hub-ip <HUB_PUBLIC_IP> \
   -hub-port 45678 \
   -tun-ip 10.0.0.2 \
-  -secret "change-this-to-a-strong-password"
+  -secret "my-password"
 ```
 
-### 3\. Verify Connectivity
+### Scenario 2: Exit Node (VPN Gateway)
 
-From the Agent (`10.0.0.2`), you can now reach the Hub or other Agents:
+In this mode, the Hub acts as a gateway. Agents can route **all their internet traffic** through the Hub, securing their connection on public WiFi or accessing restricted networks.
+
+**1. Start the Hub with Exit Node Enabled**
+Note the `-exit-node` flag matching the Hub's own TUN IP. This enables the NAT engine.
 
 ```bash
-# Ping the Hub
-ping 10.0.0.1
-
-# SSH into another device in the mesh
-ssh user@10.0.0.3
+sudo ./bin/hub \
+  -local-port 45678 \
+  -tun-ip 10.0.0.1 \
+  -exit-node 10.0.0.1 \
+  -secret "my-password"
 ```
+
+*The Hub will automatically configure `iptables` NAT/Masquerade rules and enable IP Forwarding.*
+
+**2. Start Agent with Global Routing**
+Use the `-global-exit` flag to automatically override the default gateway on the client.
+
+```bash
+sudo ./bin/agent \
+  -hub-ip <HUB_PUBLIC_IP> \
+  -hub-port 45678 \
+  -tun-ip 10.0.0.2 \
+  -global-exit \
+  -secret "my-password"
+```
+
+-----
 
 ## 📊 Monitoring Dashboard
 
-The Hub includes a built-in web server. Access it via:
+The Hub exposes a lightweight, real-time dashboard.
 
-```bash
-http://\<HUB\_LOCAL\_IP\>:8080
-```
+  * **URL:** `http://<HUB_IP>:8080`
+  * **Metrics:**
+      * **Peer Status:** Online/Offline detection based on heartbeat analysis.
+      * **Throughput:** Live Rx/Tx counters.
+      * **NAT Info:** Displays the real WAN IP and Port of every connected peer.
 
-It provides real-time stats:
-
-  * **Peer Status:** Online / Lagging / Offline.
-  * **Data Usage:** Real-time Rx/Tx counters.
-  * **Last Seen:** Heartbeat tracking.
+-----
 
 ## 📂 Project Structure
 
-This project adheres to the [Standard Go Project Layout](https://github.com/golang-standards/project-layout).
+This project follows the [Standard Go Project Layout](https://github.com/golang-standards/project-layout) for maintainability.
 
-| Directory | Purpose |
+| Directory | Description |
 | :--- | :--- |
-| `cmd/hub` | Main entry point for the Server application. |
-| `cmd/agent` | Main entry point for the Client application. |
-| `internal/security` | AEAD Encryption wrapper (ChaCha20-Poly1305). |
-| `internal/tun` | OS-level interactions (Syscalls, IOCTL) for the virtual interface. |
-| `internal/router` | In-memory routing table logic and state management. |
-| `internal/dashboard` | Embedded HTML templates and HTTP handlers. |
-| `bin/` | Compiled binaries output location. |
+| `cmd/` | Main applications (`hub` and `agent`). |
+| `internal/tun` | Low-level OS interactions. Manages `TUN` device creation, MTU, and `iptables` NAT rules. |
+| `internal/security` | Cryptographic wrapper for AEAD (ChaCha20-Poly1305) and Nonce management. |
+| `internal/router` | In-memory routing table, Peer state tracking, and Split-Horizon logic. |
+| `internal/dashboard` | Embedded HTML/CSS templates and HTTP handlers for the UI. |
+| `bin/` | Compiled binaries. |
+
+-----
 
 ## 🧪 Troubleshooting
 
-**1. "Handshake failed" / Auth Error**
-Ensure both Hub and Agent are using the **exact same** `-secret` string.
+**1. Handshake Failed**
 
-**2. Connection works but Ping fails**
-Ensure IP Forwarding is enabled on the Hub if you want to route traffic to the internet (not just mesh):
+  * Ensure the `-secret` is identical on both sides.
+  * Check UDP port firewall rules on the Hub server (Allow UDP 45678).
 
-```bash
-sudo sysctl -w net.ipv4.ip_forward=1
-```
+**2. Internet not working via Exit Node**
 
-**3. "Operation not permitted"**
-The binary must be run with `sudo` because creating a `tun0` interface requires `CAP_NET_ADMIN` capabilities.
+  * Verify that the Hub printed `[NAT] Exit Node Enabled` on startup.
+  * Check `sudo iptables -t nat -L -v` on the Hub to ensure `MASQUERADE` rules exist.
+  * Ensure the client ran with `-global-exit`.
+
+**3. Tun Interface Error**
+
+  * Ensure you are running with `sudo`. The application needs `CAP_NET_ADMIN` to create virtual network interfaces.
 
 ## 🤝 Contributing
 
