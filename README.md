@@ -10,28 +10,28 @@
 
 Unlike traditional P2P VPNs, Go-Mesh-Hub supports **Hub & Spoke** topology with flexible routing modes: **Split Tunneling** (Mesh only) and **Full Tunneling** (Exit Node / Gateway), making it ideal for IoT Fleets, Edge Computing, and secure home lab remote access.
 
-## 🚀 Key Features
+##  Key Features
 
-### 🛡️ Core Capabilities
+### Core Capabilities
 
   * **Hub & Spoke Topology:** Centralized signaling with highly efficient UDP tunneling.
   * **Exit Node Support (Full Tunneling):** Turn your Hub into a secure Gateway. Route internet traffic from agents through the Hub to mask public IPs or access geo-restricted content.
   * **Zero-Config Edge:** Agents automatically traverse NATs using **UDP Hole Punching** and persistent Keep-Alives.
   * **Self-Healing Network Stack:** Automated management of `iptables` NAT/Masquerade rules and `ip_forward` policies. Includes idempotent rule application and graceful shutdown cleanup to prevent routing conflicts.
 
-### 🔐 Security & Performance
+###  Security & Performance
 
   * **Military-Grade Encryption:** All traffic is encapsulated and encrypted using **ChaCha20-Poly1305** (AEAD) with cryptographically secure nonces to prevent replay attacks.
   * **Layer 3 Tunneling:** Utilizes a standard `TUN` interface, supporting ICMP (Ping), TCP (SSH, HTTP), and UDP natively.
   * **High Performance:** Written in pure Go using raw syscalls and user-space networking for minimal overhead.
 
-### 👁️ Observability
+###  Observability
 
   * **Real-Time Dashboard:** Embedded web interface for monitoring peer status, real-time bandwidth usage (Rx/Tx), and latency.
   * **Smart Build System:** Automated cross-compilation for Intel/AMD and ARM architectures (NVIDIA Jetson, Raspberry Pi) via `setup.sh`.
 
 -----
-## 🏗️ Architecture
+##  Architecture
 
 The system operates by creating a virtual overlay network. Packets destined for the VPN are intercepted by the `TUN` interface, encrypted in user-space, and encapsulated in UDP packets for transport over the public internet.
 
@@ -67,7 +67,7 @@ graph TD
 
 -----
 
-## 🛠️ Installation & Setup
+## Installation & Setup
 
 ### Prerequisites
 
@@ -86,7 +86,7 @@ chmod +x setup.sh
 ```
 3.  **Done\!** Binaries are located in the `bin/` directory.
 -----
-## ⚙️ Deployment Guide
+## Deployment Guide
 
 ### Scenario 1: Standard Mesh (P2P Communication)
 
@@ -144,7 +144,7 @@ sudo ./bin/agent \
 
 -----
 
-## 📊 Monitoring Dashboard
+## Monitoring Dashboard
 
 The Hub exposes a lightweight, real-time dashboard.
 
@@ -156,7 +156,7 @@ The Hub exposes a lightweight, real-time dashboard.
 
 -----
 
-## 📂 Project Structure
+## Project Structure
 
 This project follows the [Standard Go Project Layout](https://github.com/golang-standards/project-layout) for maintainability.
 
@@ -171,7 +171,7 @@ This project follows the [Standard Go Project Layout](https://github.com/golang-
 
 -----
 
-## 🧪 Troubleshooting
+## Troubleshooting
 
 **1. Handshake Failed**
 
@@ -188,7 +188,7 @@ This project follows the [Standard Go Project Layout](https://github.com/golang-
 
   * Ensure you are running with `sudo`. The application needs `CAP_NET_ADMIN` to create virtual network interfaces.
 
-## 🤝 Contributing
+## Contributing
 
 Contributions are welcome\! Please open an issue first to discuss what you would like to change.
 
@@ -198,6 +198,6 @@ Contributions are welcome\! Please open an issue first to discuss what you would
 4.  Push to the Branch (`git push origin feature/AmazingFeature`)
 5.  Open a Pull Request
 
-## 📄 License
+## License
 
 Distributed under the MIT License. See `LICENSE` for more information.
