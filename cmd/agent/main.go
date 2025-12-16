@@ -9,6 +9,9 @@ import (
 	"log"
 	"net"
 	"os/exec"
+	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"golang.org/x/crypto/chacha20poly1305"
@@ -43,10 +46,11 @@ func main() {
 		log.Fatalf("[CRIT] TUN init failed: %v", err)
 	}
 
+	var cleanupNAT func()
 	// --- EXIT NODE CONFIGURATION ---
     if *isExitNode {
-        // We call our new function
-        cleanupNAT, err := tun.EnableExitNode(ifce.Name())
+		
+        cleanupNAT, err = tun.EnableExitNode(ifce.Name())
         if err != nil {
             log.Fatalf("[CRIT] Failed to enable Exit Node: %v", err)
         }
@@ -54,6 +58,7 @@ func main() {
         defer cleanupNAT() 
     }
 
+	// if useExitNode we have to redirect all the trafic
 	if *useExitNode {
         // Resolvemos la IP del Hub (si nos pasaron un dominio, necesitamos la IP numérica para 'ip route')
         hubUDPAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", *hubIP, *hubPort))
@@ -83,6 +88,26 @@ func main() {
 	defer conn.Close()
 	log.Printf("Client %s started. Connected to Hub at %s\n", *tunIP, serverAddr)
     
+	// For clean the iptable to restore internet
+	go func() {
+		sigChan := make(chan os.Signal, 1)
+		signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+		// blocking here waiting the signal
+		sig := <-sigChan
+	
+		fmt.Println()
+		log.Printf("[OS] Received signal: %v. Cleaning up...", sig)
+		// 1. Restore IPTables / NAT 
+		if cleanupNAT != nil {
+			cleanupNAT()
+		}
+		// 2. close conections
+		conn.Close()
+		ifce.Close()
+		log.Println("[OS] Cleanup complete. Exiting.")
+		os.Exit(0) // Matamos el programa limpiamente
+	}()
+
 	// HANDSHAKE Initial 
     go func() {
 		// 1. Construct a minimal, valid IPv4 Header (20 bytes)
