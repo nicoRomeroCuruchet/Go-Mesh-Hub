@@ -102,5 +102,5 @@ echo "Find your binaries in the 'bin/' folder:"
 ls -lh bin/
 echo ""
 echo "👉 To run the Server: sudo ./bin/hub -tun-ip 10.0.0.1 ..."
-echo "👉 To run the Client: sudo ./bin/agent -hub-ip X.X.X.X ..."
+echo "👉 To run the Client: sudo ./bin/agent -hub-ip X.X.X.X -tun-ip 10.0.0.2 -hub-tun-ip 10.0.0.1 ..."
 echo ""
