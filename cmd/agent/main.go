@@ -25,6 +25,7 @@ var (
 	isExitNode  = flag.Bool("exit-node", false, "Act as an Exit Node (Route internet traffic)")
 	useExitNode = flag.Bool("global-exit", false, "Route all internet traffic through the VPN Hub")
 	secret      = flag.String("secret", "change-this-password", "Shared secret for encryption")
+	hubTunIP    = flag.String("hub-tun-ip", "10.0.0.1", "Virtual IP of the Hub (tun-ip of hub)")
 )
 
 func main() {
@@ -126,7 +127,7 @@ func main() {
 		// Bytes 16-20: Destination IP (Hub Virtual Identity)
 		// This is formal; the server will consume it anyway. 
 		// We assume the Hub is usually the .1 address.
-		destIP := net.ParseIP("10.0.0.1").To4() 
+		destIP := net.ParseIP(*hubTunIP).To4()
 		copy(handshakePacket[16:20], destIP)
 
 		// 2. Encrypt the Packet
