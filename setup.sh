@@ -88,10 +88,10 @@ fi
 
 # 4. Build Binaries
 log_info "Building Hub (Server)..."
-go build -o bin/hub cmd/hub/main.go
+go build -ldflags="-s -w" -o bin/hub cmd/hub/main.go
 
 log_info "Building Agent (Client)..."
-go build -o bin/agent cmd/agent/main.go
+go build -ldflags="-s -w" -o bin/agent cmd/agent/main.go
 
 # 5. Finish
 echo ""
