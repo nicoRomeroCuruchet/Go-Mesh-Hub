@@ -110,8 +110,11 @@ sudo ./bin/agent \
   -hub-ip <HUB_PUBLIC_IP> \
   -hub-port 45678 \
   -tun-ip 10.0.0.2 \
+  -hub-tun-ip 10.0.0.1 \
   -secret "my-password"
 ```
+
+> **`-hub-tun-ip`** must match the `-tun-ip` used when starting the Hub (defaults to `10.0.0.1`). If they differ, the Hub will drop every agent handshake with `Drop: Unknown destination`.
 
 ### Scenario 2: Exit Node (VPN Gateway)
 
@@ -138,6 +141,7 @@ sudo ./bin/agent \
   -hub-ip <HUB_PUBLIC_IP> \
   -hub-port 45678 \
   -tun-ip 10.0.0.2 \
+  -hub-tun-ip 10.0.0.1 \
   -global-exit \
   -secret "my-password"
 ```
@@ -184,7 +188,11 @@ This project follows the [Standard Go Project Layout](https://github.com/golang-
   * Check `sudo iptables -t nat -L -v` on the Hub to ensure `MASQUERADE` rules exist.
   * Ensure the client ran with `-global-exit`.
 
-**3. Tun Interface Error**
+**3. `Drop: Unknown destination` in Hub logs**
+
+  * The agent's `-hub-tun-ip` does not match the Hub's `-tun-ip`. Set `-hub-tun-ip` on the agent to the same value as `-tun-ip` on the Hub.
+
+**4. Tun Interface Error**
 
   * Ensure you are running with `sudo`. The application needs `CAP_NET_ADMIN` to create virtual network interfaces.
 
