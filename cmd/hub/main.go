@@ -6,19 +6,27 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
-	
+	"time"
+
 	"go-mesh-hub/internal/config"
 	"go-mesh-hub/internal/dashboard"
+	"go-mesh-hub/internal/protocol"
 	"go-mesh-hub/internal/router"
 	"go-mesh-hub/internal/security"
 	"go-mesh-hub/internal/tun"
 )
 
+var (
+	peerInfoMu   sync.Mutex
+	lastPeerInfo = make(map[string]time.Time) // key: "srcVIP,dstVIP"
+)
+
 func main() {
 	// 1. Load Configuration
 	cfg := config.Load()
-	
+
 	// 2. Initialize Security
 	sec, err := security.New(cfg.Secret)
 	if err != nil {
@@ -34,21 +42,19 @@ func main() {
 	// 4. Initialize Routing Table
 	routeTable := router.NewTable()
 	if cfg.ExitNodeIP != "" {
-        routeTable.SetExitNode(cfg.ExitNodeIP)
-    }
+		routeTable.SetExitNode(cfg.ExitNodeIP)
+	}
 
 	var cleanupNAT func()
 	// --- EXIT NODE CONFIGURATION ---
-    if cfg.ExitNodeIP == cfg.TunIP {
-        // we call our new function
-        cleanupNAT, err = tun.EnableExitNode(ifce.Name())
-        if err != nil {
-            log.Fatalf("[CRIT] Failed to enable Exit Node: %v", err)
-        }
+	if cfg.ExitNodeIP == cfg.TunIP {
+		cleanupNAT, err = tun.EnableExitNode(ifce.Name())
+		if err != nil {
+			log.Fatalf("[CRIT] Failed to enable Exit Node: %v", err)
+		}
 		log.Printf("[NAT] Exit Node Enabled on %s. Traffic will be masqueraded via host interface.", cfg.ExitNodeIP)
-        // ensure rules are deleted when we kill the app
-        defer cleanupNAT() 
-    }
+		defer cleanupNAT()
+	}
 
 	// 5. Start UDP Listener
 	localAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf(":%d", cfg.LocalPort))
@@ -66,12 +72,11 @@ func main() {
 	go func() {
 		sigChan := make(chan os.Signal, 1)
 		signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
-		// blocking here waiting the signal
 		sig := <-sigChan
-	
+
 		fmt.Println()
 		log.Printf("[OS] Received signal: %v. Cleaning up...", sig)
-		// 1. Restore IPTables / NAT 
+		// 1. Restore IPTables / NAT
 		if cleanupNAT != nil {
 			cleanupNAT()
 		}
@@ -79,7 +84,7 @@ func main() {
 		conn.Close()
 		ifce.Close()
 		log.Println("[OS] Cleanup complete. Exiting.")
-		os.Exit(0) // Matamos el programa limpiamente
+		os.Exit(0)
 	}()
 
 	// 6. START DASHBOARD (Non-blocking)
@@ -94,9 +99,28 @@ func main() {
 				continue
 			}
 
-			plaintext, err := sec.DecryptUnpack(buf[:n])
+			if n < 1 {
+				continue
+			}
+
+			msgType := buf[0]
+			plaintext, err := sec.DecryptUnpack(buf[1:n])
 			if err != nil {
 				continue // Auth fail
+			}
+
+			// Handle HOLE_PUNCH: learn the route (NAT binding already created by the packet)
+			if msgType == protocol.MsgHolePunch {
+				vip, err := protocol.DecodeHolePunch(plaintext)
+				if err == nil {
+					routeTable.Learn(vip.String(), remoteAddr)
+				}
+				continue
+			}
+
+			// Drop non-DATA messages
+			if msgType != protocol.MsgData {
+				continue
 			}
 
 			if len(plaintext) == 0 {
@@ -114,29 +138,27 @@ func main() {
 
 				// A. Learn Route & Record Stats
 				routeTable.Learn(srcIP, remoteAddr)
-				routeTable.RecordRx(srcIP, len(plaintext)) // Update Dashboard Stats
+				routeTable.RecordRx(srcIP, len(plaintext))
 
 				// B. Routing Decision
-                isPeer := routeTable.Lookup(dstIP) != nil
+				isPeer := routeTable.Lookup(dstIP) != nil
 
-                if isPeer {
-					//It's internal VPN traffic
-                    forwardPacket(plaintext, dstIP, conn, sec, routeTable)
-                
-                } else if dstIP == cfg.TunIP {
-                    // It's for me: Eg. ping to Hub
-                    ifce.Write(plaintext)
-                
-                } else if cfg.ExitNodeIP == cfg.TunIP {
-			        //It's Internet traffic! (e.g., Destination 8.8.8.8)
-				    //Since I'm the Exit Node and I've already enabled NAT, I inject the packet
-				    //into my TUN interface. The Linux kernel will see that it's for 8.8.8.8
-				    //and will route it through eth0 using Masquerade.
-                    ifce.Write(plaintext)
-                
-                } else {
-                    log.Printf("Drop: Unknown destination %s", dstIP)
-                }
+				if isPeer {
+					// It's internal VPN traffic
+					forwardPacket(plaintext, dstIP, conn, sec, routeTable)
+					maybeSendPeerInfo(srcIP, dstIP, conn, sec, routeTable)
+
+				} else if dstIP == cfg.TunIP {
+					// It's for me: Eg. ping to Hub
+					ifce.Write(plaintext)
+
+				} else if cfg.ExitNodeIP == cfg.TunIP {
+					// It's Internet traffic! (e.g., Destination 8.8.8.8)
+					ifce.Write(plaintext)
+
+				} else {
+					log.Printf("Drop: Unknown destination %s", dstIP)
+				}
 			}
 		}
 	}()
@@ -146,11 +168,12 @@ func main() {
 	for {
 		n, err := ifce.Read(packet)
 		if err != nil {
-			//log.Fatalf("[CRIT] TUN Read Error: %v", err)
 			return
 		}
-		
-		if n < 20 { continue }
+
+		if n < 20 {
+			continue
+		}
 
 		dstIP := net.IP(packet[16:20]).String()
 		forwardPacket(packet[:n], dstIP, conn, sec, routeTable)
@@ -159,22 +182,55 @@ func main() {
 
 // forwardPacket handles encryption and transmission based on routing rules
 func forwardPacket(data []byte, dstIP string, conn *net.UDPConn, sec *security.Manager, table *router.Table) {
-	
 	targetAddr, found := table.GetRoute(dstIP)
-    
-    if !found {
-        // Drop: No route to host (neither Peer nor Exit Node)
-        return 
-    }
+	if !found {
+		// Drop: No route to host (neither Peer nor Exit Node)
+		return
+	}
 
-	// re-encryping
-	encryptedData, err := sec.PackAndEncrypt(data)
+	encrypted, err := sec.PackAndEncrypt(data)
 	if err != nil {
 		return
 	}
 
-	conn.WriteToUDP(encryptedData, targetAddr)
-	
+	packet := append([]byte{protocol.MsgData}, encrypted...)
+	conn.WriteToUDP(packet, targetAddr)
+
 	// Update Dashboard Stats (Tx)
-	table.RecordTx(dstIP, len(data)) 
+	table.RecordTx(dstIP, len(data))
+}
+
+// maybeSendPeerInfo sends PEER_INFO to both agents if not sent within the last 30s
+func maybeSendPeerInfo(srcIP, dstIP string, conn *net.UDPConn, sec *security.Manager, table *router.Table) {
+	key := srcIP + "," + dstIP
+
+	peerInfoMu.Lock()
+	if t, ok := lastPeerInfo[key]; ok && time.Since(t) < 30*time.Second {
+		peerInfoMu.Unlock()
+		return
+	}
+	lastPeerInfo[key] = time.Now()
+	peerInfoMu.Unlock()
+
+	srcAddr := table.Lookup(srcIP)
+	dstAddr := table.Lookup(dstIP)
+	if srcAddr == nil || dstAddr == nil {
+		return
+	}
+
+	// Send B's (dstIP) info to A (srcIP)
+	payload := protocol.EncodePeerInfo(net.ParseIP(dstIP).To4(), dstAddr)
+	if encrypted, err := sec.PackAndEncrypt(payload); err == nil {
+		msg := append([]byte{protocol.MsgPeerInfo}, encrypted...)
+		conn.WriteToUDP(msg, srcAddr)
+	}
+
+	// Send A's (srcIP) info to B (dstIP)
+	payload = protocol.EncodePeerInfo(net.ParseIP(srcIP).To4(), srcAddr)
+	if encrypted, err := sec.PackAndEncrypt(payload); err == nil {
+		msg := append([]byte{protocol.MsgPeerInfo}, encrypted...)
+		conn.WriteToUDP(msg, dstAddr)
+	}
+
+	log.Printf("[P2P] Sent PEER_INFO for %s <-> %s", srcIP, dstIP)
 }
