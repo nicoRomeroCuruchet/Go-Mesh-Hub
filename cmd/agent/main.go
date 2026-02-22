@@ -1,20 +1,19 @@
 package main
 
 import (
-	"crypto/rand"
-	"crypto/sha256"
 	"flag"
 	"fmt"
-	"io"
 	"log"
 	"net"
-	"os/exec"
 	"os"
+	"os/exec"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
-	"golang.org/x/crypto/chacha20poly1305"
+	"go-mesh-hub/internal/protocol"
+	"go-mesh-hub/internal/security"
 	"go-mesh-hub/internal/tun"
 )
 
@@ -28,6 +27,11 @@ var (
 	secret      = flag.String("secret", "change-this-password", "Shared secret for encryption")
 )
 
+var (
+	directPeersMu sync.RWMutex
+	directPeers   = make(map[string]*net.UDPAddr) // virtualIP → real addr
+)
+
 func main() {
 	flag.Parse()
 	if *hubIP == "" || *tunIP == "" {
@@ -35,8 +39,7 @@ func main() {
 	}
 
 	// 1. Crypto
-	key := sha256.Sum256([]byte(*secret))
-	aead, err := chacha20poly1305.New(key[:])
+	sec, err := security.New(*secret)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -49,56 +52,54 @@ func main() {
 
 	var cleanupNAT func()
 	// --- EXIT NODE CONFIGURATION ---
-    if *isExitNode {
-		
-        cleanupNAT, err = tun.EnableExitNode(ifce.Name())
-        if err != nil {
-            log.Fatalf("[CRIT] Failed to enable Exit Node: %v", err)
-        }
-        // IMPORTANT: Ensure rules are deleted when we kill the app
-        defer cleanupNAT() 
-    }
+	if *isExitNode {
+		cleanupNAT, err = tun.EnableExitNode(ifce.Name())
+		if err != nil {
+			log.Fatalf("[CRIT] Failed to enable Exit Node: %v", err)
+		}
+		// IMPORTANT: Ensure rules are deleted when we kill the app
+		defer cleanupNAT()
+	}
 
 	// if useExitNode we have to redirect all the trafic
 	if *useExitNode {
-        // Resolvemos la IP del Hub (si nos pasaron un dominio, necesitamos la IP numérica para 'ip route')
-        hubUDPAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", *hubIP, *hubPort))
-        if err != nil {
-            log.Fatalf("[CRIT] Failed to resolve Hub IP: %v", err)
-        }
-        hubRealIP := hubUDPAddr.IP.String()
-        // Magic happens here:
-        cleanupRoutes, err := tun.RedirectGateway(ifce.Name(), hubRealIP)
-        if err != nil {
-            log.Fatalf("[CRIT] Failed to redirect gateway: %v", err)
-        }
-        defer cleanupRoutes() // Restore internet when we exit 
-        log.Println("[INFO] Global Exit Node active. You are now surfing via the Hub.")
-    }
+		// Resolvemos la IP del Hub (si nos pasaron un dominio, necesitamos la IP numérica para 'ip route')
+		hubUDPAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", *hubIP, *hubPort))
+		if err != nil {
+			log.Fatalf("[CRIT] Failed to resolve Hub IP: %v", err)
+		}
+		hubRealIP := hubUDPAddr.IP.String()
+		// Magic happens here:
+		cleanupRoutes, err := tun.RedirectGateway(ifce.Name(), hubRealIP)
+		if err != nil {
+			log.Fatalf("[CRIT] Failed to redirect gateway: %v", err)
+		}
+		defer cleanupRoutes() // Restore internet when we exit
+		log.Println("[INFO] Global Exit Node active. You are now surfing via the Hub.")
+	}
 
-	// 3. UDP Connection to Hub
-	serverAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", *hubIP, *hubPort))
+	// 3. UDP Socket (ListenUDP — can receive from any source for P2P)
+	hubAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", *hubIP, *hubPort))
 	if err != nil {
 		log.Fatal(err)
 	}
-	// DialUDP fixes the remote address, so we don't need to specify it every time
-	conn, err := net.DialUDP("udp", nil, serverAddr) 
+	localUDPAddr, _ := net.ResolveUDPAddr("udp", ":0") // OS-assigned port
+	conn, err := net.ListenUDP("udp", localUDPAddr)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer conn.Close()
-	log.Printf("Client %s started. Connected to Hub at %s\n", *tunIP, serverAddr)
-    
+	log.Printf("Client %s started. Connected to Hub at %s\n", *tunIP, hubAddr)
+
 	// For clean the iptable to restore internet
 	go func() {
 		sigChan := make(chan os.Signal, 1)
 		signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
-		// blocking here waiting the signal
 		sig := <-sigChan
-	
+
 		fmt.Println()
 		log.Printf("[OS] Received signal: %v. Cleaning up...", sig)
-		// 1. Restore IPTables / NAT 
+		// 1. Restore IPTables / NAT
 		if cleanupNAT != nil {
 			cleanupNAT()
 		}
@@ -106,21 +107,18 @@ func main() {
 		conn.Close()
 		ifce.Close()
 		log.Println("[OS] Cleanup complete. Exiting.")
-		os.Exit(0) // Matamos el programa limpiamente
+		os.Exit(0)
 	}()
 
-	// HANDSHAKE Initial 
-    go func() {
+	// HANDSHAKE Initial
+	go func() {
 		// 1. Construct a minimal, valid IPv4 Header (20 bytes)
-		// We don't need a payload, just the headers for the Server's Deep Packet Inspection.
 		handshakePacket := make([]byte, 20)
 
 		// Byte 0: Version (4) + Header Length (5 words = 20 bytes) = 0x45
-		// CRITICAL: The Server ignores packets if version != 4.
 		handshakePacket[0] = 0x45
 
 		// Bytes 12-16: Source IP (My Virtual Identity)
-		// The server uses this to learn "Who I am"
 		sourceIP := net.ParseIP(*tunIP).To4()
 		copy(handshakePacket[12:16], sourceIP)
 
@@ -128,19 +126,14 @@ func main() {
 		destIP := net.ParseIP(*hubTunIP).To4()
 		copy(handshakePacket[16:20], destIP)
 
-		// 2. Encrypt the Packet
-		nonce := make([]byte, aead.NonceSize())
-		if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
-			log.Printf("[ERR] Handshake failed: Could not generate nonce: %v", err)
+		// 2. Encrypt and send with MsgData type prefix
+		encrypted, err := sec.PackAndEncrypt(handshakePacket)
+		if err != nil {
+			log.Printf("[ERR] Handshake failed: %v", err)
 			return
 		}
-
-		// Seal (Encrypt + Authenticate)
-		encryptedPayload := aead.Seal(nil, nonce, handshakePacket, nil)
-
-		// 3. Transmit: [Nonce + Encrypted Data]
-		finalPacket := append(nonce, encryptedPayload...)
-		if _, err := conn.Write(finalPacket); err != nil {
+		msg := append([]byte{protocol.MsgData}, encrypted...)
+		if _, err := conn.WriteToUDP(msg, hubAddr); err != nil {
 			log.Printf("[ERR] Failed to send Handshake packet: %v", err)
 		} else {
 			log.Printf("[NET] Handshake sent. Registered Virtual IP %s with Hub.", *tunIP)
@@ -152,52 +145,94 @@ func main() {
 	go func() {
 		ticker := time.NewTicker(20 * time.Second)
 		for range ticker.C {
-			nonce := make([]byte, aead.NonceSize())
-			io.ReadFull(rand.Reader, nonce)
-			// Encrypting an empty slice []byte{}
-			heartbeat := aead.Seal(nil, nonce, []byte{}, nil)
-			conn.Write(append(nonce, heartbeat...))
+			encrypted, err := sec.PackAndEncrypt([]byte{})
+			if err != nil {
+				continue
+			}
+			conn.WriteToUDP(append([]byte{protocol.MsgData}, encrypted...), hubAddr)
 		}
 	}()
 
-	// --- INBOUND LOOP (Hub -> TUN) ---
+	// --- INBOUND LOOP (Hub/Peers -> TUN) ---
 	go func() {
 		buf := make([]byte, 2000)
 		for {
-			n, _, err := conn.ReadFromUDP(buf)
+			n, remoteAddr, err := conn.ReadFromUDP(buf)
 			if err != nil {
 				continue
 			}
-			
-			// Decrypt
-			nonceSize := aead.NonceSize()
-			if n < nonceSize { continue }
-			nonce := buf[:nonceSize]
-			ciphertext := buf[nonceSize:n]
-			plaintext, err := aead.Open(nil, nonce, ciphertext, nil)
+			if n < 1 {
+				continue
+			}
+
+			msgType := buf[0]
+			plaintext, err := sec.DecryptUnpack(buf[1:n])
 			if err != nil {
 				continue
 			}
 
-			// Write to TUN (only if it's a valid packet)
-			if len(plaintext) > 0 {
-				ifce.Write(plaintext)
+			switch msgType {
+			case protocol.MsgData:
+				if len(plaintext) > 0 {
+					ifce.Write(plaintext)
+				}
+
+			case protocol.MsgPeerInfo:
+				virtualIP, peerAddr, err := protocol.DecodePeerInfo(plaintext)
+				if err != nil {
+					continue
+				}
+				directPeersMu.Lock()
+				directPeers[virtualIP.String()] = peerAddr
+				directPeersMu.Unlock()
+				// Send HOLE_PUNCH to peerAddr so their NAT opens too
+				hp, err := sec.PackAndEncrypt(protocol.EncodeHolePunch(net.ParseIP(*tunIP).To4()))
+				if err == nil {
+					conn.WriteToUDP(append([]byte{protocol.MsgHolePunch}, hp...), peerAddr)
+				}
+				log.Printf("[P2P] Punching hole to %s at %s", virtualIP, peerAddr)
+
+			case protocol.MsgHolePunch:
+				virtualIP, err := protocol.DecodeHolePunch(plaintext)
+				if err != nil {
+					continue
+				}
+				directPeersMu.Lock()
+				directPeers[virtualIP.String()] = remoteAddr
+				directPeersMu.Unlock()
+				log.Printf("[P2P] Direct route established with %s", virtualIP)
 			}
 		}
 	}()
 
-	// --- OUTBOUND LOOP (TUN -> Hub) ---
+	// --- OUTBOUND LOOP (TUN -> Hub/Peers) ---
 	packet := make([]byte, 2000)
 	for {
 		n, err := ifce.Read(packet)
 		if err != nil {
 			log.Fatal(err)
 		}
-		// Encrypt and send everything to Hub
-		nonce := make([]byte, aead.NonceSize())
-		io.ReadFull(rand.Reader, nonce)
-		encrypted := aead.Seal(nil, nonce, packet[:n], nil)
-		conn.Write(append(nonce, encrypted...))
+		if n < 20 {
+			continue
+		}
+
+		dstIP := net.IP(packet[16:20]).String()
+
+		directPeersMu.RLock()
+		peerAddr, isDirect := directPeers[dstIP]
+		directPeersMu.RUnlock()
+
+		encrypted, err := sec.PackAndEncrypt(packet[:n])
+		if err != nil {
+			continue
+		}
+		msg := append([]byte{protocol.MsgData}, encrypted...)
+
+		if isDirect {
+			conn.WriteToUDP(msg, peerAddr)
+		} else {
+			conn.WriteToUDP(msg, hubAddr)
+		}
 	}
 }
 
